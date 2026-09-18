@@ -23,38 +23,32 @@ echo "[2/3] vLLM"
 CURRENT_VLLM="$(
   python3 -c 'import vllm; print(vllm.__version__)' 2>/dev/null || true
 )"
-CURRENT_TORCH_CUDA="$(
-  python3 -c 'import torch; print(torch.version.cuda or "")' 2>/dev/null || true
-)"
 MODEL_CACHE="$HF_HOME/hub/models--cyankiwi--Qwen3.8-27B-AWQ-INT4"
 
-# ── 드라이버별 설치 경로 선택 ───────────────────────────────────
-# vLLM 0.29.0 은 torch==2.13.0 을 고정하는데 torch 2.13 은 cu129/cu130 빌드만 있다(cu128 없음).
-# PyPI 기본 휠은 cu130 이라 드라이버 570(CUDA 12.8) 파드에선 "NVIDIA driver too old" 로 죽는다.
-# 대신 GitHub 릴리스의 +cu129 휠은 CUDA 12.x 마이너 호환으로 12.8 드라이버에서도 돈다
-# (2026-09-18 RTX 5090 / 570.195 에서 torch 2.13.0+cu129 cuda.is_available()=True 확인).
-#   드라이버 CUDA 13.x → pip 기본(cu130)
-#   드라이버 CUDA 12.x → +cu129 휠 + pytorch cu129 인덱스
+# ── 드라이버 호환성 사전 점검 (중요) ─────────────────────────────
+# vLLM 0.29.0 은 torch==2.13.0 을 고정하고, torch 2.13 은 cu129/cu130 빌드만 있다(cu128 없음).
+# vLLM 자체도 0.26 이후로는 cu129/cu130 휠만 배포한다(GitHub 릴리스·wheels.vllm.ai 모두 cu128 없음).
+# 드라이버 570(CUDA 12.8) 파드에서 실제로 시도한 결과:
+#   - PyPI 기본(cu130): "NVIDIA driver too old"
+#   - +cu129 휠: torch import/cuda.is_available() 은 통과하지만 모델 로드 시 Marlin 커널에서
+#     "the provided PTX was compiled with an unsupported toolchain" (cudaErrorUnsupportedPtxVersion).
+#     CUDA 마이너 호환은 SASS 에만 적용되고 PTX JIT 는 드라이버 툴체인 이하여야 하므로 우회 불가.
+# 따라서 CUDA 13 미만 드라이버면 즉시 멈추고 CUDA 13.0(드라이버 580+) 파드로 다시 잡으라고 안내한다.
 CUDA_DRV="$(nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1)"
 CUDA_MAJOR="${CUDA_DRV%%.*}"
 if [ -z "$CUDA_MAJOR" ]; then
-  echo "경고: nvidia-smi 로 드라이버 CUDA 버전을 못 읽었다. GPU 파드가 맞는지 확인해라. (PyPI 기본 휠로 진행)"
-  CUDA_MAJOR=13
+  echo "경고: nvidia-smi 로 드라이버 CUDA 버전을 못 읽었다. GPU 파드가 맞는지 확인해라."
+elif [ "$CUDA_MAJOR" -lt 13 ]; then
+  echo "=================================================================="
+  echo "  이 파드의 GPU 드라이버는 CUDA ${CUDA_DRV} 까지만 지원한다."
+  echo "  vLLM ${VLLM_VERSION} 는 cu129/cu130 휠만 있고, 12.8 드라이버에선 cu129 도"
+  echo "  모델 로드 시 PTX JIT(cudaErrorUnsupportedPtxVersion) 로 죽는다(실측)."
+  echo "  → runpod 배포 화면 Additional Filters 에서 CUDA Version 13.0 을 걸고 다시 잡아라."
+  echo "    (드라이버는 호스트 소유라 컨테이너 안에서 못 바꾼다.)"
+  echo "=================================================================="
+  exit 1
 fi
-if [ "$CUDA_MAJOR" -ge 13 ]; then
-  WHEEL="vllm==$VLLM_VERSION"
-  EXTRA=()
-  echo "드라이버 CUDA=${CUDA_DRV} -> PyPI 기본 휠(cu130)"
-else
-  WHEEL="https://github.com/vllm-project/vllm/releases/download/v${VLLM_VERSION}/vllm-${VLLM_VERSION}+cu129-cp38-abi3-manylinux_2_28_$(uname -m).whl"
-  EXTRA=(--extra-index-url https://download.pytorch.org/whl/cu129)
-  echo "드라이버 CUDA=${CUDA_DRV} -> +cu129 휠 (12.x 마이너 호환)"
-  # 이전에 PyPI 기본(cu130) 이 깔려 있으면 버전이 같아도 다시 깐다
-  if [ "$CURRENT_VLLM" = "$VLLM_VERSION" ] && [[ "$CURRENT_TORCH_CUDA" == 13* ]]; then
-    echo "설치된 torch 가 cu${CURRENT_TORCH_CUDA} 라 이 드라이버에선 못 돈다 -> cu129 로 재설치"
-    CURRENT_VLLM=""
-  fi
-fi
+echo "드라이버 CUDA=${CUDA_DRV:-unknown} (>=13 OK)"
 
 # ── 디스크 사전 점검 ─────────────────────────────────────────────
 # 모델 safetensors 합 21GB. runpod 기본 볼륨(/workspace) 20GB 면 다운로드 중 ENOSPC 로 죽는다.
@@ -84,7 +78,7 @@ if [ "$CURRENT_VLLM" = "$VLLM_VERSION" ]; then
   echo "vLLM $VLLM_VERSION already installed."
 else
   echo "Installing vLLM $VLLM_VERSION..."
-  pip install "$WHEEL" ${EXTRA[@]+"${EXTRA[@]}"}
+  pip install "vllm==$VLLM_VERSION"
 fi
 
 echo

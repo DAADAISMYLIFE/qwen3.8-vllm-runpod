@@ -50,15 +50,19 @@ Use `curl` or `requests` (both fine) — not raw `urllib`.
 
 ## Driver note (runpod)
 runpod gives different GPU drivers per pod (e.g. 570/CUDA 12.8 vs 580/CUDA 13.0), and the
-driver cannot be changed from inside the container.
-vLLM 0.29.0 pins `torch==2.13.0`, which only ships cu129/cu130 builds (no cu128):
-- **CUDA 13.x driver** → `pip install vllm==0.29.0` (PyPI default, cu130).
-- **CUDA 12.x driver** → the `+cu129` wheel from the GitHub release with the PyTorch cu129
-  index. cu129 runs on a 12.8 driver via CUDA minor-version compatibility (verified on
-  RTX 5090 / driver 570.195: `torch 2.13.0+cu129`, `cuda.is_available() == True`).
+driver cannot be changed from inside the container. **You need a CUDA 13.0 pod.** When
+deploying, open *Additional Filters* and set CUDA Version to 13.0.
 
-`setup_qwen.sh` reads the driver's CUDA version from `nvidia-smi` and picks the path
-automatically. If a cu130 install is already present on a 12.x pod it reinstalls as cu129.
+Why there is no 12.x path: vLLM 0.29.0 pins `torch==2.13.0`, which only ships cu129/cu130
+builds, and vLLM itself only publishes cu129/cu130 wheels (no cu128 anywhere for 0.26+).
+Tested on a 570/12.8 pod (RTX 5090):
+- PyPI default (cu130) → `NVIDIA driver too old`.
+- `+cu129` wheel → torch imports and `cuda.is_available()` is True, but model load dies in
+  the Marlin kernel with `the provided PTX was compiled with an unsupported toolchain`
+  (`cudaErrorUnsupportedPtxVersion`). CUDA minor-version compatibility covers SASS only;
+  PTX JIT needs a driver at least as new as the toolchain, so this cannot be worked around.
+
+`setup_qwen.sh` reads the driver's CUDA version from `nvidia-smi` and stops early on 12.x.
 
 ## Disk note (runpod)
 The model's safetensors total **21 GB**. runpod's default 20 GB `/workspace` volume is too
