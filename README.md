@@ -49,6 +49,20 @@ The runpod proxy rejects Python `urllib`'s default User-Agent with HTTP 403.
 Use `curl` or `requests` (both fine) — not raw `urllib`.
 
 ## Driver note (runpod)
-runpod gives different GPU drivers per pod (e.g. 570/CUDA12.8 vs 580/CUDA13.0).
-`setup_qwen.sh` now auto-detects the driver's CUDA version and installs the matching
-torch build (cu128 for 12.x, cu130 for 13.x), so it works regardless of which pod you get.
+runpod gives different GPU drivers per pod (e.g. 570/CUDA 12.8 vs 580/CUDA 13.0), and the
+driver cannot be changed from inside the container.
+vLLM 0.29.0 pins `torch==2.13.0`, which only ships cu129/cu130 builds (no cu128):
+- **CUDA 13.x driver** → `pip install vllm==0.29.0` (PyPI default, cu130).
+- **CUDA 12.x driver** → the `+cu129` wheel from the GitHub release with the PyTorch cu129
+  index. cu129 runs on a 12.8 driver via CUDA minor-version compatibility (verified on
+  RTX 5090 / driver 570.195: `torch 2.13.0+cu129`, `cuda.is_available() == True`).
+
+`setup_qwen.sh` reads the driver's CUDA version from `nvidia-smi` and picks the path
+automatically. If a cu130 install is already present on a 12.x pod it reinstalls as cu129.
+
+## Disk note (runpod)
+The model's safetensors total **21 GB**. runpod's default 20 GB `/workspace` volume is too
+small and the download dies with `No space left on device`. Set the pod's Volume Disk to
+**60 GB or more** (it can only be grown; data is kept, the pod restarts).
+`setup_qwen.sh` checks free space under `HF_HOME` before installing and stops early if
+there is less than 25 GB, unless the model is already cached.
