@@ -47,3 +47,8 @@ so the Qwen3.5 recipe applies.
 ## Note
 The runpod proxy rejects Python `urllib`'s default User-Agent with HTTP 403.
 Use `curl` or `requests` (both fine) — not raw `urllib`.
+
+## Driver note (runpod)
+runpod gives different GPU drivers per pod (e.g. 570/CUDA12.8 vs 580/CUDA13.0).
+`setup_qwen.sh` now auto-detects the driver's CUDA version and installs the matching
+torch build (cu128 for 12.x, cu130 for 13.x), so it works regardless of which pod you get.
