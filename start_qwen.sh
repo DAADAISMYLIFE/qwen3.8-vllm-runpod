@@ -1,51 +1,34 @@
 #!/usr/bin/env bash
+# Ollama 서버 기동 (OpenAI 호환 /v1 API). vLLM 때와 같은 8000 포트라 runpod 프록시 주소 그대로.
 set -euo pipefail
 
-export HF_HOME="/workspace/hf-cache"
-export VLLM_CACHE_ROOT="/workspace/vllm-cache"
-export TORCHINDUCTOR_CACHE_DIR="/workspace/torchinductor-cache"
+MODEL="${MODEL:-qwen3.8:27b}"
 
-export VLLM_USE_FLASHINFER_SAMPLER=0
+export OLLAMA_MODELS="/workspace/ollama"
+export OLLAMA_HOST="0.0.0.0:8000"
+export OLLAMA_CONTEXT_LENGTH=65536   # 기본값이면 revagent 20스텝 도구출력이 잘린다. 모델 네이티브 256k.
+export OLLAMA_FLASH_ATTENTION=1
+export OLLAMA_KV_CACHE_TYPE=q8_0     # KV 절반 -> 64k 컨텍스트가 32GB 에 들어감. 품질 문제 있으면 f16.
+export OLLAMA_KEEP_ALIVE=-1          # 유휴 시 모델 언로드 금지
+export OLLAMA_NUM_PARALLEL=1         # revagent 는 순차 호출. 늘리면 KV 를 그만큼 더 먹는다.
 
-MODEL="cyankiwi/Qwen3.8-27B-AWQ-INT4"
+# 주의: Ollama 는 API 키 인증이 없다. runpod 프록시 주소를 아는 사람은 누구나 호출 가능.
+#       .secure 의 QWEN 키는 무시되므로 필요하면 포트를 TCP 로 열고 SSH 터널로 붙어라.
 
-if [ -z "${VLLM_API_KEY:-}" ]; then
-  echo "VLLM_API_KEY is not set."
-  echo "Example:"
-  echo "  export VLLM_API_KEY='your-secret-key'"
-  exit 1
-fi
+ollama serve &
+PID=$!
+trap 'kill $PID 2>/dev/null || true' EXIT INT TERM
 
-# RTX 5090 32GB 기준.
-#
-# 컨텍스트/메모리
-#   --max-model-len 65536   : 모델 네이티브 256k. 먼저 64k로 올리고, 부팅 로그의
-#                             "GPU KV cache size: N tokens" 가 131072 이상이면 131072로 올려도 됨.
-#   --max-num-seqs 4        : 하이브리드(Mamba) 모델은 SSM 상태 캐시가 시퀀스 수에 비례.
-#                             128 -> 4 로 줄여서 그 VRAM을 KV 캐시에 넘김. (기존 OOM 원인)
-#   --language-model-only   : 비전 인코더 로드 스킵 (텍스트 전용). VRAM 절약.
-#   --kv-cache-memory 삭제   : 위 두 개로 자리 비웠으니 gpu-memory-utilization 기준 자동 산정.
-#                             다시 OOM 나면 --gpu-memory-utilization 0.88 로 내려볼 것.
-#   --max-cudagraph-capture-size 4 : mamba cache 에러 나면 줄이라는 게 공식 레시피.
-#
-# 에이전트용 (tool calling / thinking 분리)
-#   --enable-auto-tool-choice --tool-call-parser qwen3_coder : 함수 호출 파싱
-#   --reasoning-parser qwen3                                 : thinking 을 content 와 분리
-#
-# 옵션 (필요하면 주석 해제)
-#   --kv-cache-dtype fp8    : KV 메모리 절반 -> 토큰 예산 2배. 5090(Blackwell) 지원.
-#   --speculative-config '{"method":"mtp","num_speculative_tokens":1}' : 단일 세션 tok/s 향상.
+for _ in $(seq 1 60); do
+  curl -s --max-time 2 http://127.0.0.1:8000/api/version >/dev/null 2>&1 && break
+  sleep 1
+done
 
-exec vllm serve "$MODEL" \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --max-model-len 65536 \
-  --max-num-seqs 4 \
-  --max-cudagraph-capture-size 4 \
-  --gpu-memory-utilization 0.92 \
-  --language-model-only \
-  --enable-prefix-caching \
-  --enable-auto-tool-choice \
-  --tool-call-parser qwen3_coder \
-  --reasoning-parser qwen3 \
-  --api-key "$VLLM_API_KEY"
+# 워밍업: 지금 모델을 VRAM 에 올려 첫 요청 지연(수십 초)을 없앤다.
+echo "[start] loading $MODEL ..."
+curl -s --max-time 600 http://127.0.0.1:8000/api/generate \
+  -d "{\"model\":\"$MODEL\",\"keep_alive\":-1}" >/dev/null
+curl -s http://127.0.0.1:8000/api/ps
+echo
+echo "[start] ready: http://0.0.0.0:8000/v1  model=$MODEL"
+wait $PID

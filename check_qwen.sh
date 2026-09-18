@@ -15,7 +15,7 @@ req() {  # req <json-body>
 
 echo "=== [1] 서버 생존 + 컨텍스트 길이 ==="
 curl -s --max-time 20 -H "Authorization: Bearer $QWEN" "$URL/v1/models" \
-  | python3 -c "import json,sys; d=json.load(sys.stdin)['data'][0]; print('model:',d['id']); print('max_model_len:',d['max_model_len'])"
+  | python3 -c "import json,sys; d=json.load(sys.stdin)['data']; print('models:',[m['id'] for m in d]); print('max_model_len:',d[0].get('max_model_len','(vLLM 전용 필드, Ollama 는 OLLAMA_CONTEXT_LENGTH 로 설정)'))"
 
 echo; echo "=== [2] tool calling: 함수 호출을 뽑아내는가 ==="
 req "{
@@ -59,6 +59,7 @@ import json,sys
 c=(json.load(sys.stdin)['choices'][0]['message'].get('content') or '')
 print('PASS' if ('7' in c and '맑' in c) else 'FAIL','->',c.strip()[:120])"
 
-echo; echo "=== [5] KV 캐시 사용률 (metrics) ==="
-curl -s --max-time 20 -H "Authorization: Bearer $QWEN" "$URL/metrics" \
-  | grep -E '^vllm:kv_cache_usage_perc|kv_cache_size_tokens' | sed -E 's/.*kv_cache_size_tokens="([0-9]+)".*/kv_cache_size_tokens=\1/' | head -2
+echo; echo "=== [5] KV 캐시 사용률 (vLLM metrics; Ollama 는 없음) ==="
+{ curl -s --max-time 20 -H "Authorization: Bearer $QWEN" "$URL/metrics" \
+  | grep -E '^vllm:kv_cache_usage_perc|kv_cache_size_tokens' | sed -E 's/.*kv_cache_size_tokens="([0-9]+)".*/kv_cache_size_tokens=\1/' | head -2; } || true
+echo "(비어 있으면 Ollama 서버)"
