@@ -6,6 +6,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 set -a; . ./.secure; set +a
+URL="${URL%/}"   # 끝 슬래시 제거: Ollama(Gin) 는 //v1/... 를 307 으로 돌린다
 
 # runpod 프록시가 python urllib 기본 User-Agent 를 403 으로 막음 -> curl 사용
 req() {  # req <json-body>
